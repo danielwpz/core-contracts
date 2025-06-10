@@ -5,8 +5,46 @@
 - [Multisig contract](./multisig/)
 - [Staking Pool / Delegation contract](./staking-pool/)
 - [Staking Pool Factory](./staking-pool-factory/)
-- [Voting Contract](./voting/)
+- [Voting Contract](./voting/) - A governance contract for validators to vote on unlocking token transfers
 - [Whitelist Contract](./whitelist/)
+
+## Voting Contract
+
+The Voting Contract is a specialized governance smart contract designed to enable NEAR Protocol validators to collectively decide on unlocking token transfers. This contract implements a stake-weighted voting mechanism where validators can vote to enable token transfers once certain conditions are met.
+
+### Key Features
+
+- **Validator-Only Voting**: Only active validators with stake can participate in the voting process
+- **Stake-Weighted Decisions**: Each validator's vote is weighted by their current stake amount
+- **Supermajority Threshold**: Requires more than 2/3 of the total validator stake to approve the unlock
+- **Immutable Results**: Once voting concludes, the contract becomes read-only and cannot be modified
+- **Automatic Stake Updates**: The contract automatically adjusts vote weights when validator stakes change between epochs
+
+### How It Works
+
+1. **Initialization**: The contract is deployed and initialized with no active votes
+2. **Voting Process**: Validators call the `vote(true)` method to cast their vote in favor of unlocking transfers
+3. **Stake Verification**: The contract verifies the caller is an active validator and records their current stake
+4. **Threshold Check**: After each vote, the contract checks if the total voted stake exceeds 2/3 of the total validator stake
+5. **Finalization**: Once the threshold is reached, the contract records the timestamp and prevents further voting
+
+### Core Methods
+
+- `vote(is_vote: bool)` - Cast or withdraw a vote (validators only)
+- `ping()` - Update vote weights based on current validator stakes
+- `get_result()` - Returns the timestamp when voting concluded (if finished)
+- `get_total_voted_stake()` - Returns current voted stake vs total stake
+- `get_votes()` - Returns all active votes with their stake amounts
+
+### Use Cases
+
+This contract was specifically designed for scenarios where:
+- Token transfers need to be unlocked through validator consensus
+- Decentralized governance decisions require stake-weighted voting
+- Network upgrades or parameter changes need validator approval
+- Emergency situations require coordinated validator action
+
+The contract ensures that only validators with actual stake can influence the decision, and the supermajority requirement provides strong consensus guarantees for critical network decisions.
 
 ## Building and deploying
 
