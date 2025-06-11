@@ -1,12 +1,20 @@
 use near_sdk::borsh::{self, BorshDeserialize, BorshSerialize};
 use near_sdk::json_types::{U128, U64};
-use near_sdk::{env, near_bindgen, AccountId, Balance, EpochHeight};
+use near_sdk::{env, near_bindgen, AccountId, Balance};
 use std::collections::HashMap;
 
-#[global_allocator]
-static ALLOC: near_sdk::wee_alloc::WeeAlloc = near_sdk::wee_alloc::WeeAlloc::INIT;
-
-type WrappedTimestamp = U64;
+#[near_bindgen]
+#[derive(BorshDeserialize, BorshSerialize)]
+pub struct VotingContract {
+    /// How much each validator votes
+    votes: HashMap<AccountId, Balance>,
+    /// Total voted balance so far.
+    total_voted_stake: Balance,
+    /// When the voting ended. `None` means the poll is still open.
+    result: Option<U64>,
+    /// Epoch height when the contract is touched last time.
+    last_epoch_height: u64,
+}
 
 /// Voting contract for unlocking transfers. Once the majority of the stake holders agree to
 /// unlock transfer, the time will be recorded and the voting ends.
@@ -25,7 +33,12 @@ pub struct VotingContract {
 
 impl Default for VotingContract {
     fn default() -> Self {
-        env::panic(b"Voting contract should be initialized before usage")
+        Self {
+            votes: HashMap::new(),
+            total_voted_stake: 0,
+            result: None,
+            last_epoch_height: 0,
+        }
     }
 }
 
@@ -33,13 +46,8 @@ impl Default for VotingContract {
 impl VotingContract {
     #[init]
     pub fn new() -> Self {
-        assert!(!env::state_exists(), "The contract is already initialized");
-        VotingContract {
-            votes: HashMap::new(),
-            total_voted_stake: 0,
-            result: None,
-            last_epoch_height: 0,
-        }
+        assert!(!env::state_exists(), "Already initialized");
+        Self::default()
     }
 
     /// Ping to update the votes according to current stake of validators.
@@ -47,12 +55,12 @@ impl VotingContract {
         assert!(self.result.is_none(), "Voting has already ended");
         let cur_epoch_height = env::epoch_height();
         if cur_epoch_height != self.last_epoch_height {
-            let votes = std::mem::take(&mut self.votes);
+            self.votes.clear();
             self.total_voted_stake = 0;
-            for (account_id, _) in votes {
+            for account_id in env::validator_account_ids() {
                 let account_current_stake = env::validator_stake(&account_id);
-                self.total_voted_stake += account_current_stake;
                 if account_current_stake > 0 {
+                    self.total_voted_stake += account_current_stake;
                     self.votes.insert(account_id, account_current_stake);
                 }
             }
@@ -69,7 +77,7 @@ impl VotingContract {
         );
         let total_stake = env::validator_total_stake();
         if self.total_voted_stake > 2 * total_stake / 3 {
-            self.result = Some(U64::from(env::block_timestamp()));
+            self.result = Some(U64(env::block_timestamp()));
         }
     }
 
@@ -81,30 +89,20 @@ impl VotingContract {
             return;
         }
         let account_id = env::predecessor_account_id();
-        let account_stake = if is_vote {
-            let stake = env::validator_stake(&account_id);
-            assert!(stake > 0, "{} is not a validator", account_id);
-            stake
-        } else {
-            0
-        };
-        let voted_stake = self.votes.remove(&account_id).unwrap_or_default();
-        assert!(
-            voted_stake <= self.total_voted_stake,
-            "invariant: voted stake {} is more than total voted stake {}",
-            voted_stake,
-            self.total_voted_stake
-        );
-        self.total_voted_stake = self.total_voted_stake + account_stake - voted_stake;
-        if account_stake > 0 {
+        let account_stake = env::validator_stake(&account_id);
+        if is_vote {
+            assert!(account_stake > 0, "{} is not a validator", account_id);
             self.votes.insert(account_id, account_stake);
-            self.check_result();
+        } else {
+            self.votes.remove(&account_id);
         }
+        self.total_voted_stake = self.votes.values().sum();
+        self.check_result();
     }
 
     /// Get the timestamp of when the voting finishes. `None` means the voting hasn't ended yet.
-    pub fn get_result(&self) -> Option<WrappedTimestamp> {
-        self.result.clone()
+    pub fn get_result(&self) -> Option<U64> {
+        self.result
     }
 
     /// Returns current a pair of `total_voted_stake` and the total stake.
@@ -128,55 +126,32 @@ impl VotingContract {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 #[cfg(test)]
 mod tests {
     use super::*;
-    use near_sdk::MockedBlockchain;
-    use near_sdk::{testing_env, VMContext};
+    use near_sdk::test_utils::{VMContextBuilder, get_context, set_env};
+    use near_sdk::{testing_env, AccountId};
     use std::collections::HashMap;
     use std::iter::FromIterator;
 
-    fn get_context(predecessor_account_id: AccountId) -> VMContext {
-        get_context_with_epoch_height(predecessor_account_id, 0)
-    }
-
     fn get_context_with_epoch_height(
         predecessor_account_id: AccountId,
-        epoch_height: EpochHeight,
-    ) -> VMContext {
-        VMContext {
-            current_account_id: "alice_near".to_string(),
-            signer_account_id: "bob_near".to_string(),
-            signer_account_pk: vec![0, 1, 2],
-            predecessor_account_id,
-            input: vec![],
-            block_index: 0,
-            block_timestamp: 0,
-            account_balance: 0,
-            account_locked_balance: 0,
-            storage_usage: 1000,
-            attached_deposit: 0,
-            prepaid_gas: 2 * 10u64.pow(14),
-            random_seed: vec![0, 1, 2],
-            is_view: false,
-            output_data_receivers: vec![],
-            epoch_height,
-        }
+        epoch_height: u64,
+    ) -> VMContextBuilder {
+        let mut builder = VMContextBuilder::new();
+        builder
+            .current_account_id("alice_near".parse().unwrap())
+            .signer_account_id(predecessor_account_id.clone())
+            .predecessor_account_id(predecessor_account_id)
+            .epoch_height(epoch_height);
+        builder
     }
 
     #[test]
     #[should_panic(expected = "is not a validator")]
     fn test_nonvalidator_cannot_vote() {
-        let context = get_context("bob.near".to_string());
-        let validators = HashMap::from_iter(
-            vec![
-                ("alice_near".to_string(), 100),
-                ("bob_near".to_string(), 100),
-            ]
-            .into_iter(),
-        );
-        testing_env!(context, Default::default(), Default::default(), validators);
+        let context = get_context_with_epoch_height("bob.near".parse().unwrap(), 0);
+        set_env(context);
         let mut contract = VotingContract::new();
         contract.vote(true);
     }
@@ -184,9 +159,8 @@ mod tests {
     #[test]
     #[should_panic(expected = "Voting has already ended")]
     fn test_vote_again_after_voting_ends() {
-        let context = get_context("alice.near".to_string());
-        let validators = HashMap::from_iter(vec![("alice.near".to_string(), 100)].into_iter());
-        testing_env!(context, Default::default(), Default::default(), validators);
+        let context = get_context_with_epoch_height("alice.near".parse().unwrap(), 0);
+        set_env(context);
         let mut contract = VotingContract::new();
         contract.vote(true);
         assert!(contract.result.is_some());
@@ -195,34 +169,18 @@ mod tests {
 
     #[test]
     fn test_voting_simple() {
-        let context = get_context("test0".to_string());
         let validators = (0..10)
-            .map(|i| (format!("test{}", i), 10))
+            .map(|i| (format!("test{}", i).parse().unwrap(), 10))
             .collect::<HashMap<_, _>>();
-        testing_env!(
-            context,
-            Default::default(),
-            Default::default(),
-            validators.clone()
-        );
         let mut contract = VotingContract::new();
 
         for i in 0..7 {
-            let mut context = get_context(format!("test{}", i));
-            testing_env!(
-                context.clone(),
-                Default::default(),
-                Default::default(),
-                validators.clone()
-            );
+            let context = get_context_with_epoch_height(format!("test{}", i).parse().unwrap(), 0);
+            set_env(context);
             contract.vote(true);
+            let mut context = get_context_with_epoch_height(format!("test{}", i).parse().unwrap(), 0);
             context.is_view = true;
-            testing_env!(
-                context,
-                Default::default(),
-                Default::default(),
-                validators.clone()
-            );
+            set_env(context);
             assert_eq!(
                 contract.get_total_voted_stake(),
                 (U128::from(10 * (i + 1)), U128::from(100))
@@ -230,10 +188,10 @@ mod tests {
             assert_eq!(
                 contract.get_votes(),
                 (0..=i)
-                    .map(|i| (format!("test{}", i), U128::from(10)))
+                    .map(|i| (format!("test{}", i).parse().unwrap(), U128::from(10)))
                     .collect::<HashMap<_, _>>()
             );
-            assert_eq!(contract.votes.len() as u128, i + 1);
+            assert_eq!(contract.votes.len() as u128, (i + 1) as u128);
             if i < 6 {
                 assert!(contract.result.is_none());
             } else {
@@ -244,28 +202,13 @@ mod tests {
 
     #[test]
     fn test_voting_with_epoch_change() {
-        let validators = (0..10)
-            .map(|i| (format!("test{}", i), 10))
-            .collect::<HashMap<_, _>>();
-        let context = get_context("test0".to_string());
-        testing_env!(
-            context,
-            Default::default(),
-            Default::default(),
-            validators.clone()
-        );
         let mut contract = VotingContract::new();
 
         for i in 0..7 {
-            let context = get_context_with_epoch_height(format!("test{}", i), i);
-            testing_env!(
-                context,
-                Default::default(),
-                Default::default(),
-                validators.clone()
-            );
+            let context = get_context_with_epoch_height(format!("test{}", i).parse().unwrap(), i as u64);
+            set_env(context);
             contract.vote(true);
-            assert_eq!(contract.votes.len() as u64, i + 1);
+            assert_eq!(contract.votes.len() as u64, i as u64 + 1);
             if i < 6 {
                 assert!(contract.result.is_none());
             } else {
@@ -277,53 +220,31 @@ mod tests {
     #[test]
     fn test_validator_stake_change() {
         let mut validators = HashMap::from_iter(vec![
-            ("test1".to_string(), 40),
-            ("test2".to_string(), 10),
-            ("test3".to_string(), 10),
+            ("test1".parse().unwrap(), 40),
+            ("test2".parse().unwrap(), 10),
+            ("test3".parse().unwrap(), 10),
         ]);
-        let context = get_context_with_epoch_height("test1".to_string(), 1);
-        testing_env!(
-            context,
-            Default::default(),
-            Default::default(),
-            validators.clone()
-        );
+        let context = get_context_with_epoch_height("test1".parse().unwrap(), 1);
+        set_env(context);
 
         let mut contract = VotingContract::new();
         contract.vote(true);
-        validators.insert("test1".to_string(), 50);
-        let context = get_context_with_epoch_height("test2".to_string(), 2);
-        testing_env!(
-            context,
-            Default::default(),
-            Default::default(),
-            validators.clone()
-        );
+        validators.insert("test1".parse().unwrap(), 50);
+        let context = get_context_with_epoch_height("test2".parse().unwrap(), 2);
+        set_env(context);
         contract.ping();
         assert!(contract.result.is_some());
     }
 
     #[test]
     fn test_withdraw_votes() {
-        let validators =
-            HashMap::from_iter(vec![("test1".to_string(), 10), ("test2".to_string(), 10)]);
-        let context = get_context_with_epoch_height("test1".to_string(), 1);
-        testing_env!(
-            context,
-            Default::default(),
-            Default::default(),
-            validators.clone()
-        );
+        let context = get_context_with_epoch_height("test1".parse().unwrap(), 1);
+        set_env(context);
         let mut contract = VotingContract::new();
         contract.vote(true);
         assert_eq!(contract.votes.len(), 1);
-        let context = get_context_with_epoch_height("test1".to_string(), 2);
-        testing_env!(
-            context,
-            Default::default(),
-            Default::default(),
-            validators.clone()
-        );
+        let context = get_context_with_epoch_height("test1".parse().unwrap(), 2);
+        set_env(context);
         contract.vote(false);
         assert!(contract.votes.is_empty());
     }
@@ -331,29 +252,19 @@ mod tests {
     #[test]
     fn test_validator_kick_out() {
         let mut validators = HashMap::from_iter(vec![
-            ("test1".to_string(), 40),
-            ("test2".to_string(), 10),
-            ("test3".to_string(), 10),
+            ("test1".parse().unwrap(), 40),
+            ("test2".parse().unwrap(), 10),
+            ("test3".parse().unwrap(), 10),
         ]);
-        let context = get_context_with_epoch_height("test1".to_string(), 1);
-        testing_env!(
-            context,
-            Default::default(),
-            Default::default(),
-            validators.clone()
-        );
+        let context = get_context_with_epoch_height("test1".parse().unwrap(), 1);
+        set_env(context);
 
         let mut contract = VotingContract::new();
         contract.vote(true);
         assert_eq!((contract.get_total_voted_stake().0).0, 40);
-        validators.remove(&"test1".to_string());
-        let context = get_context_with_epoch_height("test2".to_string(), 2);
-        testing_env!(
-            context,
-            Default::default(),
-            Default::default(),
-            validators.clone()
-        );
+        validators.remove(&"test1".parse().unwrap());
+        let context = get_context_with_epoch_height("test2".parse().unwrap(), 2);
+        set_env(context);
         contract.ping();
         assert_eq!((contract.get_total_voted_stake().0).0, 0);
     }
