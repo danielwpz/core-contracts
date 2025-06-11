@@ -1,10 +1,7 @@
-use near_sdk::borsh::{self, BorshDeserialize, BorshSerialize};
+use borsh::{BorshDeserialize, BorshSerialize};
 use near_sdk::json_types::{U128, U64};
-use near_sdk::{env, near_bindgen, AccountId, Balance, EpochHeight};
+use near_sdk::{env, near_bindgen, AccountId, EpochHeight, NearToken};
 use std::collections::HashMap;
-
-#[global_allocator]
-static ALLOC: near_sdk::wee_alloc::WeeAlloc = near_sdk::wee_alloc::WeeAlloc::INIT;
 
 type WrappedTimestamp = U64;
 
@@ -14,9 +11,9 @@ type WrappedTimestamp = U64;
 #[derive(BorshDeserialize, BorshSerialize)]
 pub struct VotingContract {
     /// How much each validator votes
-    votes: HashMap<AccountId, Balance>,
+    votes: HashMap<AccountId, NearToken>,
     /// Total voted balance so far.
-    total_voted_stake: Balance,
+    total_voted_stake: NearToken,
     /// When the voting ended. `None` means the poll is still open.
     result: Option<WrappedTimestamp>,
     /// Epoch height when the contract is touched last time.
@@ -25,7 +22,7 @@ pub struct VotingContract {
 
 impl Default for VotingContract {
     fn default() -> Self {
-        env::panic(b"Voting contract should be initialized before usage")
+        env::panic_str("Voting contract should be initialized before usage")
     }
 }
 
@@ -36,7 +33,7 @@ impl VotingContract {
         assert!(!env::state_exists(), "The contract is already initialized");
         VotingContract {
             votes: HashMap::new(),
-            total_voted_stake: 0,
+            total_voted_stake: NearToken::from_yoctonear(0),
             result: None,
             last_epoch_height: 0,
         }
@@ -48,11 +45,13 @@ impl VotingContract {
         let cur_epoch_height = env::epoch_height();
         if cur_epoch_height != self.last_epoch_height {
             let votes = std::mem::take(&mut self.votes);
-            self.total_voted_stake = 0;
+            self.total_voted_stake = NearToken::from_yoctonear(0);
             for (account_id, _) in votes {
                 let account_current_stake = env::validator_stake(&account_id);
-                self.total_voted_stake += account_current_stake;
-                if account_current_stake > 0 {
+                self.total_voted_stake = NearToken::from_yoctonear(
+                    self.total_voted_stake.as_yoctonear() + account_current_stake.as_yoctonear()
+                );
+                if account_current_stake > NearToken::from_yoctonear(0) {
                     self.votes.insert(account_id, account_current_stake);
                 }
             }
@@ -68,7 +67,8 @@ impl VotingContract {
             "check result is called after result is already set"
         );
         let total_stake = env::validator_total_stake();
-        if self.total_voted_stake > 2 * total_stake / 3 {
+        let threshold = NearToken::from_yoctonear(total_stake.as_yoctonear() * 2 / 3);
+        if self.total_voted_stake > threshold {
             self.result = Some(U64::from(env::block_timestamp()));
         }
     }
