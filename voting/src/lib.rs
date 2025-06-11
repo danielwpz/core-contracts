@@ -21,6 +21,8 @@ pub struct VotingContract {
     result: Option<WrappedTimestamp>,
     /// Epoch height when the contract is touched last time.
     last_epoch_height: EpochHeight,
+    /// The deadline for voting in nanoseconds.
+    deadline: WrappedTimestamp,
 }
 
 impl Default for VotingContract {
@@ -32,13 +34,18 @@ impl Default for VotingContract {
 #[near_bindgen]
 impl VotingContract {
     #[init]
-    pub fn new() -> Self {
+    pub fn new(deadline: WrappedTimestamp) -> Self {
         assert!(!env::state_exists(), "The contract is already initialized");
+        assert!(
+            deadline.0 > env::block_timestamp(),
+            "Deadline must be in the future"
+        );
         VotingContract {
             votes: HashMap::new(),
             total_voted_stake: 0,
             result: None,
             last_epoch_height: 0,
+            deadline,
         }
     }
 
@@ -59,6 +66,9 @@ impl VotingContract {
             self.check_result();
             self.last_epoch_height = cur_epoch_height;
         }
+        if env::block_timestamp() > self.deadline.0 && self.result.is_none() {
+            self.result = Some(U64::from(0)); // Set to 0 to indicate failure due to deadline
+        }
     }
 
     /// Check whether the voting has ended.
@@ -77,6 +87,10 @@ impl VotingContract {
     /// Votes for if `is_vote` is true, or withdraws the vote if `is_vote` is false.
     pub fn vote(&mut self, is_vote: bool) {
         self.ping();
+        assert!(
+            env::block_timestamp() < self.deadline.0,
+            "Cannot vote after deadline"
+        );
         if self.result.is_some() {
             return;
         }
@@ -138,12 +152,13 @@ mod tests {
     use std::iter::FromIterator;
 
     fn get_context(predecessor_account_id: AccountId) -> VMContext {
-        get_context_with_epoch_height(predecessor_account_id, 0)
+        get_context_with_epoch_height(predecessor_account_id, 0, 0)
     }
 
     fn get_context_with_epoch_height(
         predecessor_account_id: AccountId,
         epoch_height: EpochHeight,
+        block_timestamp: u64,
     ) -> VMContext {
         VMContext {
             current_account_id: "alice_near".to_string(),
@@ -152,7 +167,7 @@ mod tests {
             predecessor_account_id,
             input: vec![],
             block_index: 0,
-            block_timestamp: 0,
+            block_timestamp,
             account_balance: 0,
             account_locked_balance: 0,
             storage_usage: 1000,
@@ -177,7 +192,7 @@ mod tests {
             .into_iter(),
         );
         testing_env!(context, Default::default(), Default::default(), validators);
-        let mut contract = VotingContract::new();
+        let mut contract = VotingContract::new(U64::from(100));
         contract.vote(true);
     }
 
@@ -187,7 +202,7 @@ mod tests {
         let context = get_context("alice.near".to_string());
         let validators = HashMap::from_iter(vec![("alice.near".to_string(), 100)].into_iter());
         testing_env!(context, Default::default(), Default::default(), validators);
-        let mut contract = VotingContract::new();
+        let mut contract = VotingContract::new(U64::from(100));
         contract.vote(true);
         assert!(contract.result.is_some());
         contract.vote(true);
