@@ -5,7 +5,7 @@
 - [Multisig contract](./multisig/)
 - [Staking Pool / Delegation contract](./staking-pool/)
 - [Staking Pool Factory](./staking-pool-factory/)
-- [Voting Contract](./voting/)
+- [Voting Contract](./voting/) - [Code Reference](./voting/src/lib.rs)
 - [Whitelist Contract](./whitelist/)
 
 ## Building and deploying
