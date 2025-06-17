@@ -32,6 +32,8 @@ It will whitelist the staking pool factory account.
 
 It requires total `80` NEAR tokens + gas fees.
 
+Note: The voting contract now requires a `voting_deadline` parameter during deployment. This will be handled by the `deploy_core.sh` script.
+
 ```bash
 ./deploy_core.sh
 ```
