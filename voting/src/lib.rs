@@ -204,6 +204,94 @@ mod tests {
     }
 
     #[test]
+    fn test_voting_after_deadline_forbidden() {
+        let context = get_context("alice.near".to_string());
+        let validators = HashMap::from_iter(vec![("alice.near".to_string(), 100)].into_iter());
+        testing_env!(context, Default::default(), Default::default(), validators);
+        let deadline = env::block_timestamp() + 1_000_000_000;
+        let mut contract = VotingContract::new(U64::from(deadline));
+
+        // Advance time past the deadline
+        testing_env!(get_context_with_epoch_height(
+            "alice.near".to_string(),
+            0,
+            deadline + 1
+        ), Default::default(), Default::default(), HashMap::new());
+
+        contract.vote(true);
+        assert!(contract.result.is_some());
+        assert_eq!(contract.get_result().unwrap().0, 0); // Should be 0 for failed
+    }
+
+
+    #[test]
+    fn test_result_after_deadline_insufficient_votes() {
+        let context = get_context("alice.near".to_string());
+        let validators = HashMap::from_iter(vec![("alice.near".to_string(), 100)].into_iter());
+        testing_env!(context, Default::default(), Default::default(), validators);
+        let deadline = env::block_timestamp() + 1_000_000_000;
+        let mut contract = VotingContract::new(U64::from(deadline));
+
+        // Do not vote, or vote with insufficient stake
+
+        // Advance time past the deadline
+        testing_env!(get_context_with_epoch_height(
+            "alice.near".to_string(),
+            0,
+            deadline + 1
+        ), Default::default(), Default::default(), HashMap::new());
+
+        contract.ping(); // Trigger check_result
+        assert!(contract.result.is_some());
+        assert_eq!(contract.get_result().unwrap().0, 0); // Should be 0 for failed
+    }
+
+
+    #[test]
+    fn test_result_after_deadline_sufficient_votes() {
+        let context = get_context("test0".to_string());
+        let validators = (0..10)
+            .map(|i| (format!("test{}", i), 10))
+            .collect::<HashMap<_, _>>();
+        testing_env!(
+            context,
+            Default::default(),
+            Default::default(),
+            validators.clone()
+        );
+        let deadline = env::block_timestamp() + 1_000_000_000;
+        let mut contract = VotingContract::new(U64::from(deadline));
+
+        // Vote with sufficient stake (70% of total stake)
+        for i in 0..7 {
+            let context = get_context_with_epoch_height(format!("test{}", i), 0, env::block_timestamp());
+            testing_env!(
+                context,
+                Default::default(),
+                Default::default(),
+                validators.clone()
+            );
+            contract.vote(true);
+        }
+
+        // Advance time past the deadline
+        testing_env!(get_context_with_epoch_height(
+            "test0".to_string(),
+            0,
+            deadline + 1
+        ), Default::default(), Default::default(), HashMap::new());
+
+        contract.ping(); // Trigger check_result
+        assert!(contract.result.is_some());
+        assert_ne!(contract.get_result().unwrap().0, 0); // Should not be 0 (failed)
+    }
+
+
+
+
+
+
+    #[test]
     #[should_panic(expected = "Voting has already ended or failed due to deadline")]
     fn test_vote_again_after_voting_ends() {
         let context = get_context("alice.near".to_string());
